@@ -18,7 +18,7 @@
    - Обычный пользователь может получить только свой отчёт (`client_id` в токене должен совпадать)св
    - Администратор (`admin` role) может получить отчёт любого пользователя
 
-3. **`/reports/clients`**, **`/reports/client/{client_id}`**, **`/reports/prosthesis/{serial_number}`** - публичные эндпоинты (для совместимости)
+3. **`/reports/clients`**, **`/reports/client/{client_id}`**, **`/reports/prosthesis/{serial_number}`** - публичные эндпоинты
 
 ## Компоненты
 
