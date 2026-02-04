@@ -1,2 +1,29 @@
 /task1/subtask2/postgres-keycloak-data
 2024__yandex-architecture-sso.code-workspace
+
+# Python
+**/__pycache__/
+**/py[cod]
+**/$py.class
+**/so
+**/.Python
+**/egg-info/
+**/eggs/
+
+# Airflow
+**/logs/
+**/airflow.db
+**/airflow-webserver.pid
+
+# Docker volumes (local)
+**/docker-data/
+
+# IDE
+**/idea/
+**/vscode/
+**/swp
+**/swo
+
+# OS
+**/.DS_Store
+**/*.Thumbs.db
