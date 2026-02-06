@@ -1,0 +1,238 @@
+version: '3.8'
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: ./etl
+    dockerfile: airflow/Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: 'zTvhk3Y3FE8TIGUq-7R_3V8nG7YXEFvnOCf7K_L9lbE='
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    POSTGRES_CONN: postgresql://app:app_password@postgres-main:5432/bionicpro
+    CRM_CONN: postgresql://crm:crm_password@postgres-crm:5432/crm
+    CLICKHOUSE_HOST: clickhouse
+    CLICKHOUSE_PORT: 9000
+    CLICKHOUSE_USER: default
+    CLICKHOUSE_PASSWORD: ''
+    CLICKHOUSE_DB: analytics
+  volumes:
+    - ./etl/dags:/opt/airflow/dags
+    - airflow-logs:/opt/airflow/logs
+    - airflow-plugins:/opt/airflow/plugins
+  depends_on:
+    &airflow-common-depends-on
+    airflow-postgres:
+      condition: service_healthy
+    postgres-main:
+      condition: service_healthy
+    postgres-crm:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+
+services:
+  postgres-main:
+    image: postgres:15
+    container_name: bionicpro-postgres-main
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_password
+      POSTGRES_DB: bionicpro
+    volumes:
+      - postgres-main-data:/var/lib/postgresql/data
+      - ./etl/init-scripts/postgres:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d bionicpro"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bionicpro-network
+
+  postgres-crm:
+    image: postgres:15
+    container_name: bionicpro-postgres-crm
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm_password
+      POSTGRES_DB: crm
+    volumes:
+      - postgres-crm-data:/var/lib/postgresql/data
+      - ./etl/init-scripts/crm:/docker-entrypoint-initdb.d
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bionicpro-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: bionicpro-clickhouse
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./etl/init-scripts/clickhouse:/docker-entrypoint-initdb.d
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bionicpro-network
+
+  airflow-postgres:
+    image: postgres:15
+    container_name: bionicpro-airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bionicpro-network
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: bionicpro-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@bionicpro.local || true
+        airflow connections delete 'postgres_main' || true
+        airflow connections add 'postgres_main' \
+          --conn-type 'postgres' \
+          --conn-host 'postgres-main' \
+          --conn-login 'app' \
+          --conn-password 'app_password' \
+          --conn-port '5432' \
+          --conn-schema 'bionicpro'
+        airflow connections delete 'postgres_crm' || true
+        airflow connections add 'postgres_crm' \
+          --conn-type 'postgres' \
+          --conn-host 'postgres-crm' \
+          --conn-login 'crm' \
+          --conn-password 'crm_password' \
+          --conn-port '5432' \
+          --conn-schema 'crm'
+        airflow connections delete 'clickhouse_analytics' || true
+        airflow connections add 'clickhouse_analytics' \
+          --conn-type 'http' \
+          --conn-host 'clickhouse' \
+          --conn-port '8123' \
+          --conn-schema 'analytics'
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    networks:
+      - bionicpro-network
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: bionicpro-airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - bionicpro-network
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: bionicpro-airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - bionicpro-network
+
+  reports-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: bionicpro-reports-api
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DATABASE: analytics
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: always
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - bionicpro-network
+
+networks:
+  bionicpro-network:
+    driver: bridge
+
+volumes:
+  postgres-main-data:
+  postgres-crm-data:
+  clickhouse-data:
+  airflow-postgres-data:
+  airflow-logs:
+  airflow-plugins:
